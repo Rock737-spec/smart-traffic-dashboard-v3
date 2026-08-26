@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+
 import {
   LayoutDashboard,
   Cpu,
   TrafficCone,
   Map,
   Siren,
+  BrainCircuit,
   BarChart3,
   Network,
   Activity,
@@ -16,15 +18,56 @@ import {
 import { useTheme } from "@/components/ThemeProvider";
 
 const menuItems = [
-  { title: "Dashboard", icon: LayoutDashboard, id: "top" },
-  { title: "Controllers", icon: Cpu, id: "controllers" },
-  { title: "Traffic Signals", icon: TrafficCone, id: "signals" },
-  { title: "Live Intersection", icon: Map, id: "intersection" },
-  { title: "Emergency", icon: Siren, id: "emergency" },
-  { title: "System Analytics", icon: BarChart3, id: "analytics" },
-  { title: "Network", icon: Network, id: "network" },
-  { title: "System Health", icon: Activity, id: "health" },
-  { title: "Event Log", icon: ScrollText, id: "events" },
+  {
+    title: "Dashboard",
+    icon: LayoutDashboard,
+    id: "top",
+  },
+  {
+    title: "Controllers",
+    icon: Cpu,
+    id: "controllers",
+  },
+  {
+    title: "Traffic Signals",
+    icon: TrafficCone,
+    id: "signals",
+  },
+  {
+    title: "Live Intersection",
+    icon: Map,
+    id: "intersection",
+  },
+  {
+    title: "AI Traffic Analysis",
+    icon: BrainCircuit,
+    id: "ai-analysis",
+  },
+  {
+    title: "Emergency",
+    icon: Siren,
+    id: "emergency",
+  },
+  {
+    title: "System Analytics",
+    icon: BarChart3,
+    id: "analytics",
+  },
+  {
+    title: "Network",
+    icon: Network,
+    id: "network",
+  },
+  {
+    title: "System Health",
+    icon: Activity,
+    id: "health",
+  },
+  {
+    title: "Event Log",
+    icon: ScrollText,
+    id: "events",
+  },
 ];
 
 export default function Sidebar() {
@@ -61,6 +104,7 @@ export default function Sidebar() {
         top: 0,
         behavior: "smooth",
       });
+
       return;
     }
 
@@ -82,6 +126,8 @@ export default function Sidebar() {
           : "bg-white border-gray-300 text-black"
       }`}
     >
+      {/* SIDEBAR HEADER */}
+
       <div className="p-6">
         <h1
           className={`text-2xl font-bold ${
@@ -103,6 +149,8 @@ export default function Sidebar() {
           Navigation
         </p>
       </div>
+
+      {/* NAVIGATION */}
 
       <nav className="px-4 space-y-2">
         {menuItems.map((item) => {
