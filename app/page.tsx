@@ -8,6 +8,7 @@ import ControllerCards from "@/components/ControllerCards";
 import SignalCards from "@/components/SignalCards";
 import LiveIntersection from "@/components/LiveIntersection";
 import AITrafficAnalysis from "@/components/AITrafficAnalysis";
+import AmbulanceCamera from "@/components/AmbulanceCamera";
 import EmergencyPanel from "@/components/EmergencyPanel";
 import Analytics from "@/components/Analytics";
 import NetworkTopology from "@/components/NetworkTopology";
@@ -54,11 +55,9 @@ export default function DashboardPage() {
         firebaseConnected
           ? "Firebase Connected"
           : "Firebase Disconnected",
-
         firebaseConnected
           ? "Realtime database connection established."
           : "Lost connection to Firebase.",
-
         firebaseConnected
           ? "success"
           : "error"
@@ -74,11 +73,9 @@ export default function DashboardPage() {
         data.emergency.active
           ? "🚑 Ambulance Detected"
           : "Emergency Cleared",
-
         data.emergency.active
           ? "Priority Mode Activated."
           : "Traffic returned to normal operation.",
-
         data.emergency.active
           ? "warning"
           : "success"
@@ -97,11 +94,9 @@ export default function DashboardPage() {
         data.controllers.master.online
           ? "Master ESP32 Connected"
           : "Master ESP32 Offline",
-
         data.controllers.master.online
           ? "Master controller communication restored."
           : "Master controller stopped responding.",
-
         data.controllers.master.online
           ? "success"
           : "error"
@@ -120,11 +115,9 @@ export default function DashboardPage() {
         data.controllers.slave.online
           ? "Slave ESP32 Connected"
           : "Slave ESP32 Offline",
-
         data.controllers.slave.online
           ? "Slave controller communication restored."
           : "Slave controller stopped responding.",
-
         data.controllers.slave.online
           ? "success"
           : "error"
@@ -143,11 +136,9 @@ export default function DashboardPage() {
         data.controllers.ambulance.online
           ? "Ambulance ESP32 Connected"
           : "Ambulance ESP32 Offline",
-
         data.controllers.ambulance.online
           ? "Ambulance controller connected."
           : "Ambulance controller disconnected.",
-
         data.controllers.ambulance.online
           ? "success"
           : "error"
@@ -166,11 +157,9 @@ export default function DashboardPage() {
         data.controllers.ambulance.nrf24
           ? "NRF24 Connected"
           : "NRF24 Disconnected",
-
         data.controllers.ambulance.nrf24
           ? "Wireless radio link established."
           : "Wireless radio link lost.",
-
         data.controllers.ambulance.nrf24
           ? "success"
           : "error"
@@ -212,7 +201,6 @@ export default function DashboardPage() {
         }`}
       >
         <div className="text-center">
-
           <div
             className="
               w-16
@@ -240,7 +228,6 @@ export default function DashboardPage() {
           >
             Connecting to Firebase...
           </p>
-
         </div>
       </div>
     );
@@ -259,7 +246,6 @@ export default function DashboardPage() {
           : "bg-slate-50 text-slate-900"
       }`}
     >
-
       {/* SIDEBAR */}
 
       <Sidebar />
@@ -273,7 +259,6 @@ export default function DashboardPage() {
             : "bg-slate-50"
         }`}
       >
-
         <Header
           firebaseConnected={firebaseConnected}
         />
@@ -332,7 +317,17 @@ export default function DashboardPage() {
               ====================================================== */}
 
           <section id="ai-analysis">
-            <AITrafficAnalysis />
+          <AITrafficAnalysis
+  emergency={data.emergency}
+/>
+          </section>
+
+          {/* ======================================================
+              AMBULANCE CAMERA
+              ====================================================== */}
+
+          <section id="ambulance-camera">
+            <AmbulanceCamera />
           </section>
 
           {/* ======================================================

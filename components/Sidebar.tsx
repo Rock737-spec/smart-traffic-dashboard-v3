@@ -13,6 +13,7 @@ import {
   Network,
   Activity,
   ScrollText,
+  Camera,
 } from "lucide-react";
 
 import { useTheme } from "@/components/ThemeProvider";
@@ -44,6 +45,11 @@ const menuItems = [
     id: "ai-analysis",
   },
   {
+    title: "Ambulance Visual Verifier",
+    icon: Camera,
+    id: "ambulance-camera",
+  },
+  {
     title: "Emergency",
     icon: Siren,
     id: "emergency",
@@ -72,7 +78,6 @@ const menuItems = [
 
 export default function Sidebar() {
   const [active, setActive] = useState("top");
-
   const { theme } = useTheme();
 
   useEffect(() => {
@@ -104,7 +109,6 @@ export default function Sidebar() {
         top: 0,
         behavior: "smooth",
       });
-
       return;
     }
 
@@ -127,7 +131,6 @@ export default function Sidebar() {
       }`}
     >
       {/* SIDEBAR HEADER */}
-
       <div className="p-6">
         <h1
           className={`text-2xl font-bold ${
@@ -151,11 +154,9 @@ export default function Sidebar() {
       </div>
 
       {/* NAVIGATION */}
-
       <nav className="px-4 space-y-2">
         {menuItems.map((item) => {
           const Icon = item.icon;
-
           const selected = active === item.id;
 
           return (

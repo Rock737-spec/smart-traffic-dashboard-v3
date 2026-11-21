@@ -1,70 +1,130 @@
 "use client";
 
-import {
+import React, {
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 
-import VehicleDetector from "@/components/VehicleDetector";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceDot,
+} from "recharts";
 
-export default function AITrafficAnalysis() {
+import VehicleDetector from "./VehicleDetector";
+import type { EmergencyStatus } from "@/types/traffic";
+
+// ============================================================
+// TYPES
+// ============================================================
+
+interface TrafficPoint {
+  time: number;
+  vehicles: number;
+  predictedGreenTime: number;
+}
+
+interface EmergencyAccepted {
+  time: number;
+  acceptedAt: string;
+  vehicles: number;
+  predictedGreenTime: number;
+  route?: string;
+  eventId?: string;
+}
+
+interface AITrafficAnalysisProps {
+  emergency: EmergencyStatus;
+}
+
+// ============================================================
+// COMPONENT
+// ============================================================
+
+export default function AITrafficAnalysis({
+  emergency,
+}: AITrafficAnalysisProps) {
+  // ============================================================
+  // VIDEO STATE
+  // ============================================================
+
   const [videoURL, setVideoURL] =
     useState<string | null>(null);
 
-  /*
-   * Live weighted vehicle count.
-   */
+  const [isVideoPlaying, setIsVideoPlaying] =
+    useState(false);
+
+  const [videoEnded, setVideoEnded] =
+    useState(false);
+
+  const videoTimeRef = useRef(0);
+
+  // ============================================================
+  // VEHICLE STATE
+  // ============================================================
+
   const [vehicleCount, setVehicleCount] =
-    useState<number>(0);
+    useState(0);
 
-  /*
-   * Stabilized count used internally
-   * for the AI recommendation.
-   */
   const [stableVehicleCount, setStableVehicleCount] =
-    useState<number>(0);
+    useState(0);
 
-  const [
-    predictedGreenTime,
-    setPredictedGreenTime,
-  ] = useState<number>(0);
+  // ============================================================
+  // AI GREEN TIME
+  // ============================================================
 
-  const videoURLRef =
-    useRef<string | null>(null);
+  const [predictedGreenTime, setPredictedGreenTime] =
+    useState(0);
 
-  /*
-   * Recent vehicle counts used for
-   * short-term smoothing.
-   */
-  const vehicleHistoryRef =
+  const currentPredictedGreenTimeRef =
+    useRef(0);
+
+  const lastNonZeroPredictionRef =
+    useRef(0);
+
+  // ============================================================
+  // FINAL LOCKED AI VALUE
+  // ============================================================
+
+  const [finalLockedGreenTime, setFinalLockedGreenTime] =
+    useState<number | null>(null);
+
+  const finalLockedGreenTimeRef =
+    useRef<number | null>(null);
+
+  // ============================================================
+  // TRAFFIC HISTORY
+  // ============================================================
+
+  const [trafficHistory, setTrafficHistory] =
+    useState<TrafficPoint[]>([]);
+
+  const recentVehicleCountsRef =
     useRef<number[]>([]);
 
-  /*
-   * ============================================================
-   * TRAFFIC HISTORY GRAPH
-   * ============================================================
-   *
-   * Stores the detected weighted vehicle count over time.
-   *
-   * IMPORTANT:
-   * - This is separate from vehicleHistoryRef.
-   * - vehicleHistoryRef is used for smoothing.
-   * - trafficHistory is used only for the graph.
-   *
-   * The graph remains after the video ends.
-   * It is cleared only when:
-   * 1. A new video is uploaded.
-   * 2. Reset is pressed.
-   */
-  const [trafficHistory, setTrafficHistory] =
-    useState<number[]>([]);
+  // ============================================================
+  // EMERGENCY ACCEPTANCE
+  // ============================================================
 
-  /*
-   * ============================================================
-   * GREEN TIME CALCULATION
-   * ============================================================
-   */
+  const [emergencyAccepted, setEmergencyAccepted] =
+    useState<EmergencyAccepted | null>(null);
+
+  const emergencyAcceptedRef =
+    useRef<EmergencyAccepted | null>(null);
+
+  const previousEmergencyActiveRef =
+    useRef(false);
+
+  // ============================================================
+  // CALCULATE AI GREEN TIME
+  // ============================================================
 
   const calculateGreenTime = (
     vehicles: number
@@ -81,126 +141,324 @@ export default function AITrafficAnalysis() {
       return 15;
     }
 
-    const calculatedTime =
+    const extraVehicles =
+      vehicles - 10;
+
+    const calculated =
       15 +
       Math.ceil(
-        (vehicles - 10) * 1.2
+        extraVehicles * 1.2
       );
 
     return Math.min(
-      calculatedTime,
+      calculated,
       60
     );
   };
 
-  /*
-   * ============================================================
-   * VEHICLE COUNT CHANGE
-   * ============================================================
-   */
+  // ============================================================
+  // SEND CURRENT AI TIME TO FLASK
+  // ============================================================
+
+  const sendEmergencyTime = async (
+    greenTime: number
+  ) => {
+    try {
+      await fetch(
+        "http://127.0.0.1:5000/ai-emergency-time",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            greenTime,
+          }),
+        }
+      );
+    } catch {
+      // Flask may temporarily be unavailable.
+      // Do not interrupt the AI dashboard.
+    }
+  };
+
+  // ============================================================
+  // VIDEO PLAY
+  // ============================================================
+
+  const handleVideoPlay = async () => {
+    setIsVideoPlaying(true);
+    setVideoEnded(false);
+
+    try {
+      await fetch(
+        "http://127.0.0.1:5000/ai-video-start",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            time: 0,
+          }),
+        }
+      );
+    } catch {
+      // No action needed if Flask is unavailable.
+    }
+  };
+
+  // ============================================================
+  // VIDEO PAUSE
+  // ============================================================
+
+  const handleVideoPause = () => {
+    setIsVideoPlaying(false);
+  };
+
+  // ============================================================
+  // VIDEO END
+  // ============================================================
+
+  const handleVideoEnded = async () => {
+    setIsVideoPlaying(false);
+    setVideoEnded(true);
+
+    // ----------------------------------------------------------
+    // LOCK FINAL AI VALUE
+    // ----------------------------------------------------------
+
+    const finalValue =
+      currentPredictedGreenTimeRef.current ||
+      lastNonZeroPredictionRef.current ||
+      0;
+
+    finalLockedGreenTimeRef.current =
+      finalValue;
+
+    setFinalLockedGreenTime(
+      finalValue
+    );
+
+    try {
+      await fetch(
+        "http://127.0.0.1:5000/ai-video-end",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            greenTime:
+              finalValue,
+            videoTime:
+              videoTimeRef.current,
+          }),
+        }
+      );
+    } catch {
+      // Flask unavailable.
+      // Local final value remains locked.
+    }
+  };
+
+  // ============================================================
+  // VIDEO TIME
+  // ============================================================
+
+  const handleVideoTimeChange = (
+    currentTime: number
+  ) => {
+    videoTimeRef.current =
+      currentTime;
+  };
+
+  // ============================================================
+  // VEHICLE COUNT
+  // ============================================================
 
   const handleVehicleCountChange = (
     count: number
   ) => {
-    /*
-     * Show the current AI vehicle count.
-     */
-    setVehicleCount(count);
+    const safeCount =
+      Math.max(
+        0,
+        Math.round(count)
+      );
 
-    /*
-     * ==========================================================
-     * TRAFFIC GRAPH UPDATE
-     * ==========================================================
-     *
-     * Add the current weighted vehicle count
-     * to the graph history.
-     *
-     * Keep a reasonable maximum number of
-     * points so a long video does not create
-     * an unnecessarily huge React state.
-     */
-    setTrafficHistory((previous) => {
-      const updated = [
-        ...previous,
-        count,
-      ];
-
-      /*
-       * Keep the latest 300 graph points.
-       *
-       * This does NOT affect the AI smoothing.
-       * It only controls how much history is
-       * displayed on the graph.
-       */
-      if (updated.length > 300) {
-        return updated.slice(
-          updated.length - 300
-        );
-      }
-
-      return updated;
-    });
-
-    /*
-     * Store recent values.
-     */
-    vehicleHistoryRef.current.push(
-      count
+    setVehicleCount(
+      safeCount
     );
 
-    /*
-     * Keep the latest seven values.
-     */
+    // ----------------------------------------------------------
+    // SMOOTH VEHICLE COUNT
+    // ----------------------------------------------------------
+
+    recentVehicleCountsRef.current.push(
+      safeCount
+    );
+
     if (
-      vehicleHistoryRef.current.length >
-      7
+      recentVehicleCountsRef.current
+        .length > 7
     ) {
-      vehicleHistoryRef.current.shift();
+      recentVehicleCountsRef.current.shift();
     }
 
-    const history =
-      vehicleHistoryRef.current;
+    const values =
+      recentVehicleCountsRef.current;
 
-    /*
-     * Calculate short-term average.
-     */
     const average =
-      history.reduce(
-        (sum, value) =>
+      values.reduce(
+        (
+          sum,
+          value
+        ) =>
           sum + value,
         0
-      ) / history.length;
+      ) /
+      values.length;
 
-    /*
-     * Convert to a whole-number
-     * traffic count.
-     */
     const stableCount =
-      Math.round(average);
+      Math.max(
+        0,
+        Math.round(
+          average
+        )
+      );
 
     setStableVehicleCount(
       stableCount
     );
 
-    /*
-     * Calculate recommended green time
-     * from stabilized traffic.
-     */
-    const greenTime =
+    // ----------------------------------------------------------
+    // CALCULATE AI GREEN TIME
+    // ----------------------------------------------------------
+
+    const newPrediction =
       calculateGreenTime(
         stableCount
       );
 
+    currentPredictedGreenTimeRef.current =
+      newPrediction;
+
     setPredictedGreenTime(
-      greenTime
+      newPrediction
     );
+
+    if (
+      newPrediction > 0
+    ) {
+      lastNonZeroPredictionRef.current =
+        newPrediction;
+    }
+
+    // ----------------------------------------------------------
+    // UPDATE GRAPH
+    //
+    // IMPORTANT:
+    // Only ONE graph point is kept for each video timestamp.
+    // This prevents Recharts from drawing overlapping/
+    // zig-zagging duplicate lines.
+    // ----------------------------------------------------------
+
+    if (isVideoPlaying) {
+      const currentTime =
+        Number(
+          videoTimeRef.current.toFixed(
+            1
+          )
+        );
+
+      setTrafficHistory(
+        (previous) => {
+          const newPoint: TrafficPoint = {
+            time: currentTime,
+            vehicles:
+              stableCount,
+            predictedGreenTime:
+              newPrediction,
+          };
+
+          // ----------------------------------------------------
+          // CHECK FOR EXISTING TIMESTAMP
+          // ----------------------------------------------------
+
+          const existingIndex =
+            previous.findIndex(
+              (point) =>
+                point.time ===
+                currentTime
+            );
+
+          let next: TrafficPoint[];
+
+          if (
+            existingIndex !== -1
+          ) {
+            // Replace the old point instead of adding
+            // another point with the same X value.
+            next = [
+              ...previous,
+            ];
+
+            next[
+              existingIndex
+            ] = newPoint;
+          } else {
+            next = [
+              ...previous,
+              newPoint,
+            ];
+          }
+
+          // ----------------------------------------------------
+          // ALWAYS SORT BY VIDEO TIME
+          // ----------------------------------------------------
+
+          next.sort(
+            (a, b) =>
+              a.time - b.time
+          );
+
+          // ----------------------------------------------------
+          // KEEP MAXIMUM 300 POINTS
+          // ----------------------------------------------------
+
+          if (
+            next.length > 300
+          ) {
+            return next.slice(
+              next.length - 300
+            );
+          }
+
+          return next;
+        }
+      );
+    }
+
+    // ----------------------------------------------------------
+    // SEND AI VALUE
+    // ----------------------------------------------------------
+
+    if (
+      isVideoPlaying &&
+      newPrediction > 0
+    ) {
+      sendEmergencyTime(
+        newPrediction
+      );
+    }
   };
 
-  /*
-   * ============================================================
-   * VIDEO UPLOAD
-   * ============================================================
-   */
+  // ============================================================
+  // VIDEO UPLOAD
+  // ============================================================
 
   const handleVideoUpload = (
     event: React.ChangeEvent<HTMLInputElement>
@@ -212,1185 +470,335 @@ export default function AITrafficAnalysis() {
       return;
     }
 
-    /*
-     * Validate video.
-     */
-
-    if (
-      !file.type.startsWith("video/")
-    ) {
-      alert(
-        "Please select a valid video file."
-      );
-
-      return;
-    }
-
-    /*
-     * Release old object URL.
-     */
-
-    if (
-      videoURLRef.current
-    ) {
-      URL.revokeObjectURL(
-        videoURLRef.current
-      );
-    }
-
-    /*
-     * Create new object URL.
-     */
-
     const url =
-      URL.createObjectURL(file);
-
-    videoURLRef.current =
-      url;
+      URL.createObjectURL(
+        file
+      );
 
     setVideoURL(url);
 
-    /*
-     * Reset AI values.
-     */
+    // ----------------------------------------------------------
+    // RESET VIDEO
+    // ----------------------------------------------------------
+
+    setVideoEnded(false);
+    setIsVideoPlaying(false);
+
+    videoTimeRef.current =
+      0;
+
+    // ----------------------------------------------------------
+    // RESET VEHICLES
+    // ----------------------------------------------------------
 
     setVehicleCount(0);
 
-    setStableVehicleCount(0);
+    setStableVehicleCount(
+      0
+    );
 
-    setPredictedGreenTime(0);
+    recentVehicleCountsRef.current =
+      [];
 
-    vehicleHistoryRef.current = [];
+    // ----------------------------------------------------------
+    // RESET AI
+    // ----------------------------------------------------------
 
-    /*
-     * ==========================================================
-     * RESET TRAFFIC GRAPH
-     * ==========================================================
-     *
-     * A new video starts a completely new
-     * traffic analysis session.
-     */
-    setTrafficHistory([]);
-  };
+    setPredictedGreenTime(
+      0
+    );
 
-  /*
-   * ============================================================
-   * RESET
-   * ============================================================
-   */
+    currentPredictedGreenTimeRef.current =
+      0;
 
-  const resetAnalysis = () => {
-    /*
-     * Release video.
-     */
+    lastNonZeroPredictionRef.current =
+      0;
 
-    if (
-      videoURLRef.current
-    ) {
-      URL.revokeObjectURL(
-        videoURLRef.current
-      );
+    // ----------------------------------------------------------
+    // RESET FINAL VALUE
+    // ----------------------------------------------------------
 
-      videoURLRef.current =
-        null;
-    }
+    setFinalLockedGreenTime(
+      null
+    );
 
-    /*
-     * Reset video.
-     */
+    finalLockedGreenTimeRef.current =
+      null;
 
-    setVideoURL(null);
-
-    /*
-     * Reset AI.
-     */
-
-    setVehicleCount(0);
-
-    setStableVehicleCount(0);
-
-    setPredictedGreenTime(0);
-
-    vehicleHistoryRef.current = [];
-
-    /*
-     * Reset traffic graph.
-     */
+    // ----------------------------------------------------------
+    // RESET GRAPH
+    // ----------------------------------------------------------
 
     setTrafficHistory([]);
+
+    // ----------------------------------------------------------
+    // RESET EMERGENCY ACCEPTANCE
+    // ----------------------------------------------------------
+
+    setEmergencyAccepted(
+      null
+    );
+
+    emergencyAcceptedRef.current =
+      null;
+
+    previousEmergencyActiveRef.current =
+      false;
   };
 
-  /*
-   * ============================================================
-   * CLEANUP
-   * ============================================================
-   */
+  // ============================================================
+  // EMERGENCY ACCEPTANCE
+  //
+  // Keep this because the graph should still mark the moment
+  // the emergency becomes active.
+  // ============================================================
 
   useEffect(() => {
-    return () => {
-      if (
-        videoURLRef.current
-      ) {
-        URL.revokeObjectURL(
-          videoURLRef.current
+    const wasActive =
+      previousEmergencyActiveRef.current;
+
+    const isActive =
+      emergency.active;
+
+    // ----------------------------------------------------------
+    // FALSE -> TRUE
+    // ----------------------------------------------------------
+
+    if (
+      !wasActive &&
+      isActive
+    ) {
+      const now =
+        new Date();
+
+      const acceptedAt =
+        now.toLocaleTimeString(
+          "en-IN",
+          {
+            hour12: false,
+          }
         );
-      }
-    };
-  }, []);
 
-  /*
-   * ============================================================
-   * AI RECOMMENDATION
-   * ============================================================
-   */
+      // Capture countdown immediately.
+      const acceptedGreenTime =
+        Number(
+          emergency.countdown
+        ) || 0;
 
-  const getRecommendation = () => {
-    if (
-      stableVehicleCount === 0
-    ) {
-      return "No traffic detected";
+      const acceptedVehicles =
+        Math.max(
+          0,
+          Number.isFinite(
+            vehicleCount
+          )
+            ? vehicleCount
+            : stableVehicleCount
+        );
+
+      const acceptedVideoTime =
+        Number(
+          videoTimeRef.current.toFixed(
+            1
+          )
+        );
+
+      const snapshot: EmergencyAccepted =
+        {
+          time:
+            acceptedVideoTime,
+
+          acceptedAt:
+            acceptedAt,
+
+          vehicles:
+            acceptedVehicles,
+
+          predictedGreenTime:
+            acceptedGreenTime,
+
+          route:
+            emergency.route,
+
+          eventId:
+            `${Date.now()}-${emergency.route}`,
+        };
+
+      emergencyAcceptedRef.current =
+        snapshot;
+
+      setEmergencyAccepted(
+        snapshot
+      );
     }
 
-    if (
-      stableVehicleCount <= 4
-    ) {
-      return "Light traffic — short green phase";
-    }
+    previousEmergencyActiveRef.current =
+      isActive;
+  }, [
+    emergency.active,
+    emergency.route,
+    emergency.countdown,
+    vehicleCount,
+    stableVehicleCount,
+  ]);
+
+  // ============================================================
+  // DISPLAYED GREEN TIME
+  // ============================================================
+
+  const displayedGreenTime =
+    videoEnded
+      ? finalLockedGreenTime ??
+        0
+      : predictedGreenTime;
+
+  // ============================================================
+  // TOOLTIP FORMATTER
+  // ============================================================
+
+  const trafficTooltipFormatter = (
+    value: unknown,
+    name: unknown
+  ): [string | number, string] => {
+    const numericValue =
+      typeof value === "number"
+        ? value
+        : Number(
+            value ?? 0
+          );
+
+    const seriesName =
+      String(
+        name ?? ""
+      );
 
     if (
-      stableVehicleCount <= 10
+      seriesName ===
+      "vehicles"
     ) {
-      return "Moderate traffic — normal green phase";
+      return [
+        numericValue,
+        "Vehicles",
+      ];
     }
 
-    if (
-      stableVehicleCount <= 20
-    ) {
-      return "High traffic — extended green phase";
-    }
-
-    return "Heavy traffic — maximum green phase";
+    return [
+      `${numericValue}s`,
+      "AI Green Time",
+    ];
   };
 
-  /*
-   * ============================================================
-   * GRAPH CALCULATIONS
-   * ============================================================
-   */
-
-  const graphMax =
-    trafficHistory.length > 0
-      ? Math.max(
-          5,
-          ...trafficHistory
-        )
-      : 5;
-
-  /*
-   * ============================================================
-   * UI
-   * ============================================================
-   */
+  // ============================================================
+  // RENDER
+  // ============================================================
 
   return (
-    <section
-      id="ai-analysis"
-      className="
-        rounded-2xl
-        border
-        border-cyan-400/20
-        bg-slate-950/70
-        p-5
-        shadow-lg
-      "
-    >
+    <div className="space-y-6">
 
       {/* ======================================================
           HEADER
-      ======================================================= */}
+      ====================================================== */}
 
-      <div
-        className="
-          mb-5
-          flex
-          items-center
-          justify-between
-        "
-      >
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
 
         <div>
-
-          <h2
-            className="
-              text-xl
-              font-bold
-              tracking-wide
-              text-cyan-300
-            "
-          >
-            AI TRAFFIC ANALYSIS
+          <h2 className="text-2xl font-bold">
+            AI Traffic Analysis
           </h2>
 
-          <p
-            className="
-              mt-1
-              text-sm
-              text-slate-400
-            "
-          >
-            Real-time computer vision and
-            adaptive signal prediction
+          <p className="text-sm opacity-70">
+            Vehicle detection and adaptive emergency
+            green-time prediction
           </p>
-
         </div>
 
         <div
-          className="
-            rounded-full
-            border
-            border-cyan-400/30
-            px-3
-            py-1
-            text-xs
-            text-cyan-300
-          "
+          className={`rounded-full px-4 py-2 text-sm font-semibold ${
+            isVideoPlaying
+              ? "bg-green-500/20 text-green-400"
+              : videoEnded
+              ? "bg-blue-500/20 text-blue-400"
+              : "bg-gray-500/20 text-gray-400"
+          }`}
         >
-          AI MODULE
+          {isVideoPlaying
+            ? "AI ANALYSIS RUNNING"
+            : videoEnded
+            ? "ANALYSIS COMPLETE"
+            : "READY"}
         </div>
 
       </div>
 
       {/* ======================================================
-          VIDEO + RESULTS
-      ======================================================= */}
+          VIDEO
+      ====================================================== */}
 
-      <div
-        className="
-          grid
-          gap-5
-          lg:grid-cols-2
-        "
-      >
+      <div className="rounded-xl border border-white/10 bg-black/20 p-5">
 
-        {/* ====================================================
-            VIDEO
-        ===================================================== */}
+        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
 
-        <div>
-
-          <div
-            className="
-              mb-2
-              flex
-              items-center
-              justify-between
-            "
-          >
-
-            <h3
-              className="
-                text-sm
-                font-semibold
-                text-slate-200
-              "
-            >
-              TRAFFIC VIDEO
+          <div>
+            <h3 className="font-semibold">
+              Traffic Video
             </h3>
 
-            {videoURL && (
-              <span
-                className="
-                  text-xs
-                  text-green-400
-                "
-              >
-                AI DETECTION ENABLED
-              </span>
-            )}
-
+            <p className="text-xs opacity-60">
+              Upload a traffic video for AI analysis.
+            </p>
           </div>
 
-          {/* ==================================================
-              VEHICLE DETECTOR
-          =================================================== */}
+          <label className="cursor-pointer rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700">
 
-          {videoURL ? (
+            Upload Video
+
+            <input
+              type="file"
+              accept="video/*"
+              onChange={
+                handleVideoUpload
+              }
+              className="hidden"
+            />
+
+          </label>
+
+        </div>
+
+        {videoURL ? (
+          <div className="overflow-hidden rounded-xl border border-white/10 bg-black">
+
             <VehicleDetector
               videoURL={videoURL}
               onVehicleCountChange={
                 handleVehicleCountChange
               }
+              onVideoPlay={
+                handleVideoPlay
+              }
+              onVideoPause={
+                handleVideoPause
+              }
+              onVideoEnded={
+                handleVideoEnded
+              }
+              onVideoTimeChange={
+                handleVideoTimeChange
+              }
             />
-          ) : (
-            <div
-              className="
-                relative
-                flex
-                aspect-video
-                items-center
-                justify-center
-                overflow-hidden
-                rounded-xl
-                border
-                border-slate-700
-                bg-black
-              "
-            >
-
-              <div
-                className="
-                  text-center
-                "
-              >
-
-                <div
-                  className="
-                    mb-2
-                    text-4xl
-                  "
-                >
-                  🎥
-                </div>
-
-                <p
-                  className="
-                    text-sm
-                    text-slate-400
-                  "
-                >
-                  No traffic video loaded
-                </p>
-
-                <p
-                  className="
-                    mt-1
-                    text-xs
-                    text-slate-600
-                  "
-                >
-                  Upload a traffic video
-                  to begin AI analysis
-                </p>
-
-              </div>
-
-            </div>
-          )}
-
-          {/* ==================================================
-              UPLOAD / RESET
-          =================================================== */}
-
-          <div
-            className="
-              mt-3
-              flex
-              gap-2
-            "
-          >
-
-            <label
-              className="
-                cursor-pointer
-                rounded-lg
-                border
-                border-cyan-400/30
-                bg-cyan-400/10
-                px-4
-                py-2
-                text-sm
-                text-cyan-300
-                transition
-                hover:bg-cyan-400/20
-              "
-            >
-              Upload Traffic Video
-
-              <input
-                type="file"
-                accept="video/*"
-                className="hidden"
-                onChange={
-                  handleVideoUpload
-                }
-              />
-            </label>
-
-            {videoURL && (
-              <button
-                onClick={
-                  resetAnalysis
-                }
-                className="
-                  rounded-lg
-                  border
-                  border-red-400/30
-                  bg-red-400/10
-                  px-4
-                  py-2
-                  text-sm
-                  text-red-300
-                  transition
-                  hover:bg-red-400/20
-                "
-              >
-                Reset
-              </button>
-            )}
-
-          </div>
-
-          {/* ==================================================
-              COMPUTER VISION ENGINE
-          =================================================== */}
-
-          <div
-            className="
-              mt-4
-              rounded-xl
-              border
-              border-slate-700
-              bg-slate-900/70
-              p-4
-            "
-          >
-
-            <p
-              className="
-                text-xs
-                font-semibold
-                text-cyan-300
-              "
-            >
-              COMPUTER VISION ENGINE
-            </p>
-
-            <p
-              className="
-                mt-2
-                text-xs
-                text-slate-400
-              "
-            >
-              TensorFlow.js + COCO-SSD
-            </p>
-
-            <p
-              className="
-                mt-1
-                text-xs
-                text-slate-500
-              "
-            >
-              Detecting cars, trucks,
-              buses and motorcycles
-              directly from the traffic
-              video.
-            </p>
-
-          </div>
-
-        </div>
-
-        {/* ====================================================
-            AI RESULTS
-        ===================================================== */}
-
-        <div>
-
-          <h3
-            className="
-              mb-3
-              text-sm
-              font-semibold
-              text-slate-200
-            "
-          >
-            AI PREDICTION
-          </h3>
-
-          <div
-            className="
-              grid
-              grid-cols-2
-              gap-3
-            "
-          >
-
-            {/* =================================================
-                VEHICLES DETECTED
-            ================================================= */}
-
-            <div
-              className="
-                rounded-xl
-                border
-                border-cyan-400/20
-                bg-slate-900/70
-                p-4
-              "
-            >
-
-              <p
-                className="
-                  text-xs
-                  text-slate-500
-                "
-              >
-                VEHICLES DETECTED
-              </p>
-
-              <p
-                className="
-                  mt-2
-                  text-3xl
-                  font-bold
-                  text-cyan-300
-                "
-              >
-                {vehicleCount}
-              </p>
-
-              <p
-                className="
-                  mt-1
-                  text-xs
-                  text-slate-600
-                "
-              >
-                AI detected traffic count
-              </p>
-
-            </div>
-
-            {/* =================================================
-                CURRENT ESP32 GREEN
-            ================================================= */}
-
-            <div
-              className="
-                rounded-xl
-                border
-                border-slate-700
-                bg-slate-900/70
-                p-4
-              "
-            >
-
-              <p
-                className="
-                  text-xs
-                  text-slate-500
-                "
-              >
-                CURRENT GREEN
-              </p>
-
-              <p
-                className="
-                  mt-2
-                  text-3xl
-                  font-bold
-                  text-green-300
-                "
-              >
-                30s
-              </p>
-
-              <p
-                className="
-                  mt-1
-                  text-xs
-                  text-slate-600
-                "
-              >
-                ESP32 configured timing
-              </p>
-
-            </div>
-
-            {/* =================================================
-                AI PREDICTED GREEN
-            ================================================= */}
-
-            <div
-              className="
-                rounded-xl
-                border
-                border-cyan-400/30
-                bg-cyan-400/5
-                p-4
-              "
-            >
-
-              <p
-                className="
-                  text-xs
-                  text-slate-500
-                "
-              >
-                AI PREDICTED GREEN
-              </p>
-
-              <p
-                className="
-                  mt-2
-                  text-3xl
-                  font-bold
-                  text-cyan-300
-                "
-              >
-                {predictedGreenTime}s
-              </p>
-
-              <p
-                className="
-                  mt-1
-                  text-xs
-                  text-slate-500
-                "
-              >
-                Recommended duration based
-                on detected traffic
-              </p>
-
-            </div>
-
-          </div>
-
-          {/* ==================================================
-              AI RECOMMENDATION
-          =================================================== */}
-
-          <div
-            className="
-              mt-4
-              rounded-xl
-              border
-              border-purple-400/20
-              bg-purple-400/5
-              p-4
-            "
-          >
-
-            <p
-              className="
-                text-xs
-                text-slate-500
-              "
-            >
-              AI RECOMMENDATION
-            </p>
-
-            <p
-              className="
-                mt-1
-                font-semibold
-                text-purple-300
-              "
-            >
-              {getRecommendation()}
-            </p>
-
-            <p
-              className="
-                mt-1
-                text-xs
-                text-slate-400
-              "
-            >
-              Based on the current traffic
-              conditions, the AI recommends{" "}
-              {predictedGreenTime} seconds
-              of green time. The physical
-              traffic signal continues using
-              the existing ESP32 timing.
-            </p>
-
-          </div>
-
-          {/* ==================================================
-              AI SYSTEM INFORMATION
-          =================================================== */}
-
-          <div
-            className="
-              mt-3
-              rounded-xl
-              border
-              border-slate-700
-              bg-slate-900/50
-              p-3
-            "
-          >
-
-            <p
-              className="
-                text-xs
-                font-semibold
-                text-slate-400
-              "
-            >
-              AI SYSTEM
-            </p>
-
-            <div
-              className="
-                mt-2
-                space-y-1
-                text-xs
-                text-slate-500
-              "
-            >
-
-              <p>
-                Detection:
-                {" "}
-                <span
-                  className="
-                    text-cyan-300
-                  "
-                >
-                  COCO-SSD
-                </span>
-              </p>
-
-              <p>
-                Vehicle types:
-                {" "}
-                <span
-                  className="
-                    text-cyan-300
-                  "
-                >
-                  Car · Motorcycle · Bus · Truck
-                </span>
-              </p>
-
-              <p>
-                Recommendation:
-                {" "}
-                <span
-                  className="
-                    text-green-400
-                  "
-                >
-                  Adaptive
-                </span>
-              </p>
-
-              <p>
-                Signal control:
-                {" "}
-                <span
-                  className="
-                    text-yellow-300
-                  "
-                >
-                  ESP32
-                </span>
-              </p>
-
-            </div>
-
-          </div>
-
-        </div>
-
-      </div>
-
-      {/* ======================================================
-          TRAFFIC HISTORY GRAPH
-      ======================================================= */}
-
-      <div
-        className="
-          mt-6
-          rounded-xl
-          border
-          border-cyan-400/20
-          bg-slate-900/70
-          p-5
-        "
-      >
-
-        {/* GRAPH HEADER */}
-
-        <div
-          className="
-            mb-4
-            flex
-            items-center
-            justify-between
-          "
-        >
-
-          <div>
-
-            <h3
-              className="
-                text-sm
-                font-semibold
-                tracking-wide
-                text-slate-200
-              "
-            >
-              TRAFFIC HISTORY
-            </h3>
-
-            <p
-              className="
-                mt-1
-                text-xs
-                text-slate-500
-              "
-            >
-              Weighted vehicle count detected
-              throughout the video
-            </p>
-
-          </div>
-
-          {trafficHistory.length > 0 && (
-            <div
-              className="
-                rounded-full
-                border
-                border-cyan-400/20
-                bg-cyan-400/5
-                px-3
-                py-1
-                text-xs
-                text-cyan-300
-              "
-            >
-              {trafficHistory.length} samples
-            </div>
-          )}
-
-        </div>
-
-        {/* GRAPH */}
-
-        {trafficHistory.length > 0 ? (
-          <div
-            className="
-              relative
-              h-64
-              w-full
-              overflow-hidden
-              rounded-lg
-              border
-              border-slate-800
-              bg-slate-950
-            "
-          >
-
-            {/* Y AXIS GRID */}
-
-            <div
-              className="
-                pointer-events-none
-                absolute
-                inset-0
-                flex
-                flex-col
-                justify-between
-                p-4
-              "
-            >
-
-              {[4, 3, 2, 1, 0].map(
-                (line) => (
-                  <div
-                    key={line}
-                    className="
-                      flex
-                      w-full
-                      items-center
-                    "
-                  >
-
-                    <div
-                      className="
-                        absolute
-                        left-0
-                        right-0
-                        border-t
-                        border-slate-800
-                      "
-                    />
-
-                  </div>
-                )
-              )}
-
-            </div>
-
-            {/* Y AXIS LABEL */}
-
-            <div
-              className="
-                absolute
-                left-2
-                top-2
-                z-10
-                text-[10px]
-                text-slate-500
-              "
-            >
-              VEHICLES
-            </div>
-
-            {/* GRAPH SVG */}
-
-            <svg
-              viewBox="0 0 1000 300"
-              preserveAspectRatio="none"
-              className="
-                absolute
-                inset-0
-                h-full
-                w-full
-              "
-            >
-
-              {/* AREA UNDER GRAPH */}
-
-              <polygon
-                points={trafficHistory
-                  .map(
-                    (value, index) => {
-                      const x =
-                        trafficHistory.length ===
-                        1
-                          ? 0
-                          : (index /
-                              (trafficHistory.length -
-                                1)) *
-                            1000;
-
-                      const y =
-                        280 -
-                        (value /
-                          graphMax) *
-                          240;
-
-                      return `${x},${y}`;
-                    }
-                  )
-                  .join(" ") +
-                  ` 1000,280 0,280`}
-                fill="rgba(34,211,238,0.08)"
-              />
-
-              {/* TRAFFIC LINE */}
-
-              <polyline
-                fill="none"
-                stroke="#22d3ee"
-                strokeWidth="3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                vectorEffect="non-scaling-stroke"
-                points={trafficHistory
-                  .map(
-                    (value, index) => {
-                      const x =
-                        trafficHistory.length ===
-                        1
-                          ? 0
-                          : (index /
-                              (trafficHistory.length -
-                                1)) *
-                            1000;
-
-                      const y =
-                        280 -
-                        (value /
-                          graphMax) *
-                          240;
-
-                      return `${x},${y}`;
-                    }
-                  )
-                  .join(" ")}
-              />
-
-              {/* CURRENT POINT */}
-
-              {trafficHistory.length > 0 && (
-                <circle
-                  cx={
-                    trafficHistory.length === 1
-                      ? 0
-                      : 1000
-                  }
-                  cy={
-                    280 -
-                    (trafficHistory[
-                      trafficHistory.length -
-                        1
-                    ] /
-                      graphMax) *
-                      240
-                  }
-                  r="6"
-                  fill="#22d3ee"
-                />
-              )}
-
-            </svg>
-
-            {/* Y AXIS VALUES */}
-
-            <div
-              className="
-                pointer-events-none
-                absolute
-                bottom-4
-                left-2
-                top-4
-                flex
-                flex-col
-                justify-between
-                text-[10px]
-                text-slate-500
-              "
-            >
-
-              <span>
-                {graphMax}
-              </span>
-
-              <span>
-                {Math.round(
-                  graphMax * 0.75
-                )}
-              </span>
-
-              <span>
-                {Math.round(
-                  graphMax * 0.5
-                )}
-              </span>
-
-              <span>
-                {Math.round(
-                  graphMax * 0.25
-                )}
-              </span>
-
-              <span>
-                0
-              </span>
-
-            </div>
-
-            {/* X AXIS LABEL */}
-
-            <div
-              className="
-                absolute
-                bottom-1
-                right-3
-                text-[10px]
-                text-slate-600
-              "
-            >
-              TIME →
-            </div>
-
-            {/* CURRENT VALUE */}
-
-            <div
-              className="
-                absolute
-                right-3
-                top-3
-                rounded-lg
-                border
-                border-cyan-400/20
-                bg-black/50
-                px-3
-                py-2
-              "
-            >
-
-              <p
-                className="
-                  text-[10px]
-                  text-slate-500
-                "
-              >
-                CURRENT
-              </p>
-
-              <p
-                className="
-                  text-lg
-                  font-bold
-                  text-cyan-300
-                "
-              >
-                {
-                  trafficHistory[
-                    trafficHistory.length -
-                      1
-                  ]
-                }
-              </p>
-
-            </div>
 
           </div>
         ) : (
-          <div
-            className="
-              flex
-              h-64
-              items-center
-              justify-center
-              rounded-lg
-              border
-              border-slate-800
-              bg-slate-950
-            "
-          >
+          <div className="flex min-h-[260px] items-center justify-center rounded-xl border border-dashed border-white/20 bg-black/20">
 
-            <div
-              className="
-                text-center
-              "
-            >
+            <div className="text-center">
 
-              <div
-                className="
-                  mb-2
-                  text-3xl
-                "
-              >
-                📈
+              <div className="text-4xl">
+                🎥
               </div>
 
-              <p
-                className="
-                  text-sm
-                  text-slate-400
-                "
-              >
-                No traffic history yet
-              </p>
-
-              <p
-                className="
-                  mt-1
-                  text-xs
-                  text-slate-600
-                "
-              >
-                Upload and play a traffic
-                video to generate the graph
+              <p className="mt-2 text-sm opacity-70">
+                Upload a traffic video to start AI
+                analysis
               </p>
 
             </div>
@@ -1398,42 +806,302 @@ export default function AITrafficAnalysis() {
           </div>
         )}
 
-        {/* GRAPH STATUS */}
+      </div>
 
-        <div
-          className="
-            mt-3
-            flex
-            items-center
-            justify-between
-            text-xs
-          "
-        >
+      {/* ======================================================
+          AI STATISTICS
+      ====================================================== */}
 
-          <span
-            className="
-              text-slate-500
-            "
-          >
-            {trafficHistory.length > 0
-              ? "Traffic history retained after video completion"
-              : "Waiting for traffic detection"}
-          </span>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
 
-          {trafficHistory.length > 0 && (
-            <span
-              className="
-                text-cyan-400
-              "
+        {/* VEHICLES */}
+
+        <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+
+          <p className="text-xs uppercase opacity-60">
+            Current Vehicles
+          </p>
+
+          <p className="mt-2 text-3xl font-bold">
+            {vehicleCount}
+          </p>
+
+        </div>
+
+        {/* STABLE VEHICLES */}
+
+        <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+
+          <p className="text-xs uppercase opacity-60">
+            Smoothed Vehicles
+          </p>
+
+          <p className="mt-2 text-3xl font-bold">
+            {stableVehicleCount}
+          </p>
+
+        </div>
+
+        {/* GREEN TIME */}
+
+        <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+
+          <p className="text-xs uppercase opacity-60">
+            AI Green Time
+          </p>
+
+          <p className="mt-2 text-3xl font-bold">
+            {displayedGreenTime}s
+          </p>
+
+          <p className="mt-1 text-xs opacity-60">
+            {videoEnded
+              ? "Final locked value"
+              : "Current prediction"}
+          </p>
+
+        </div>
+
+        {/* VIDEO TIME */}
+
+        <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+
+          <p className="text-xs uppercase opacity-60">
+            Video Position
+          </p>
+
+          <p className="mt-2 text-3xl font-bold">
+            {videoTimeRef.current.toFixed(
+              1
+            )}
+            s
+          </p>
+
+        </div>
+
+      </div>
+
+      {/* ======================================================
+          GRAPH
+      ====================================================== */}
+
+      <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+
+        <div className="mb-5">
+
+          <h3 className="font-semibold">
+            Vehicle Count & AI Green-Time Analysis
+          </h3>
+
+          <p className="text-xs opacity-60">
+            Vehicle count and AI green-time prediction
+            throughout the video.
+          </p>
+
+        </div>
+
+        <div className="h-[360px] w-full">
+
+          {trafficHistory.length > 0 ? (
+
+            <ResponsiveContainer
+              width="100%"
+              height="100%"
             >
-              ● HISTORY ACTIVE
-            </span>
+
+              <LineChart
+                data={trafficHistory}
+                margin={{
+                  top: 30,
+                  right: 30,
+                  left: 10,
+                  bottom: 20,
+                }}
+              >
+
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  opacity={0.15}
+                />
+
+                <XAxis
+                  dataKey="time"
+                  type="number"
+                  domain={[
+                    "dataMin",
+                    "dataMax",
+                  ]}
+                  tickFormatter={(
+                    value
+                  ) =>
+                    `${value}s`
+                  }
+                />
+
+                <YAxis
+                  allowDecimals={false}
+                />
+
+                <Tooltip
+                  formatter={
+                    trafficTooltipFormatter
+                  }
+                  labelFormatter={(
+                    value
+                  ) =>
+                    `Video Time: ${value}s`
+                  }
+                />
+
+                {/* ==================================================
+                    VEHICLE COUNT
+                ================================================== */}
+
+                <Line
+                  type="monotone"
+                  dataKey="vehicles"
+                  strokeWidth={2}
+                  dot={false}
+                  name="vehicles"
+                  isAnimationActive={false}
+                  connectNulls
+                />
+
+                {/* ==================================================
+                    AI GREEN TIME
+                ================================================== */}
+
+                <Line
+                  type="monotone"
+                  dataKey="predictedGreenTime"
+                  strokeWidth={2}
+                  dot={false}
+                  name="predictedGreenTime"
+                  isAnimationActive={false}
+                  connectNulls
+                />
+
+                {/* ==================================================
+                    EMERGENCY ACCEPTANCE MARKER
+
+                    This remains because it is part of the graph
+                    requirement, not the removed snapshot panel.
+                ================================================== */}
+
+                {emergencyAccepted && (
+                  <ReferenceDot
+                    x={
+                      emergencyAccepted.time
+                    }
+                    y={
+                      emergencyAccepted.vehicles
+                    }
+                    r={7}
+                    label={{
+                      value:
+                        `ACCEPTED • ${emergencyAccepted.predictedGreenTime}s`,
+                      position:
+                        "top",
+                    }}
+                  />
+                )}
+
+              </LineChart>
+
+            </ResponsiveContainer>
+
+          ) : (
+
+            <div className="flex h-full items-center justify-center rounded-xl bg-white/5 text-sm opacity-60">
+
+              Start a video to generate the AI
+              traffic graph.
+
+            </div>
+
           )}
 
         </div>
 
       </div>
 
-    </section>
+      {/* ======================================================
+          FINAL AI DECISION
+      ====================================================== */}
+
+      <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+
+          <div>
+
+            <h3 className="font-semibold">
+              AI Green-Time Decision
+            </h3>
+
+            <p className="text-xs opacity-60">
+              The prediction changes while the video
+              plays and becomes locked when the video ends.
+            </p>
+
+          </div>
+
+          <div
+            className={`rounded-lg px-5 py-3 text-center ${
+              videoEnded
+                ? "bg-blue-500/20"
+                : "bg-green-500/20"
+            }`}
+          >
+
+            <p className="text-xs opacity-60">
+              {videoEnded
+                ? "FINAL LOCKED"
+                : "CURRENT"}
+            </p>
+
+            <p className="text-2xl font-bold">
+              {displayedGreenTime}s
+            </p>
+
+          </div>
+
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+
+          <div className="rounded-lg bg-white/5 p-4">
+
+            <p className="text-xs opacity-60">
+              While Video Plays
+            </p>
+
+            <p className="mt-1 text-sm">
+              AI continuously updates the predicted
+              green duration from the detected vehicle
+              count.
+            </p>
+
+          </div>
+
+          <div className="rounded-lg bg-white/5 p-4">
+
+            <p className="text-xs opacity-60">
+              Emergency Request
+            </p>
+
+            <p className="mt-1 text-sm">
+              The green-time value available when the
+              emergency becomes active is captured for
+              that emergency event.
+            </p>
+
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
   );
 }
